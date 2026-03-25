@@ -1,1 +1,1 @@
-https://timingspx-rnkp3jycjappp85brvfc8wx.streamlit.app
+https://timing-spx.streamlit.app
