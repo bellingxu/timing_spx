@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import urllib3
 
-# 禁用 SSL  警告
+# 禁用 SSL 警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- 1. 路径与配置 ---
@@ -276,6 +276,35 @@ def get_iwm_daily_data():
         
     try:
         yf_data = yf.download('IWM', start='1990-01-01', progress=False)
+        if not yf_data.empty:
+            if isinstance(yf_data.columns, pd.MultiIndex):
+                yf_data.columns = yf_data.columns.get_level_values(0)
+            df_daily = yf_data[['Open', 'High', 'Low', 'Close']].dropna()
+            df_daily.to_csv(cache_file)
+            return df_daily
+    except: pass
+    
+    if os.path.exists(cache_file):
+        try:
+            return pd.read_csv(cache_file, parse_dates=['Date']).set_index('Date')
+        except: pass
+    return pd.DataFrame()
+
+@st.cache_data(ttl=3600)
+def get_dxy_daily_data():
+    cache_file = os.path.join(BASE_DIR, "DXY_Daily_Cache.csv")
+    df_daily = pd.DataFrame()
+    
+    if os.path.exists(cache_file):
+        try:
+            mtime = datetime.fromtimestamp(os.path.getmtime(cache_file))
+            if datetime.now() - mtime < timedelta(days=1):
+                df_daily = pd.read_csv(cache_file, parse_dates=['Date']).set_index('Date')
+                if not df_daily.empty: return df_daily
+        except: pass
+        
+    try:
+        yf_data = yf.download('DX-Y.NYB', start='2006-01-01', progress=False)
         if not yf_data.empty:
             if isinstance(yf_data.columns, pd.MultiIndex):
                 yf_data.columns = yf_data.columns.get_level_values(0)
@@ -848,12 +877,13 @@ if st.session_state.force_refresh:
     get_spx_weekly_data.clear() 
     get_ndx_weekly_data.clear() 
     get_iwm_daily_data.clear()
+    get_dxy_daily_data.clear()
     get_g4_m2_data.clear()
     get_fci_data.clear()
     for cache_f in [METRICS_CACHE_FILE, COMPONENTS_PARQUET, GLOBAL_PARQUET, SMH_XLP_CACHE_FILE,
                     os.path.join(BASE_DIR, "SPX_Weekly_Cache.csv"), os.path.join(BASE_DIR, "NDX_Weekly_Cache.csv"),
-                    os.path.join(BASE_DIR, "IWM_Daily_Cache.csv"), os.path.join(BASE_DIR, "G4_M2_Cache.csv"),
-                    os.path.join(BASE_DIR, "G4_M2_Daily_Cache.csv")]:
+                    os.path.join(BASE_DIR, "IWM_Daily_Cache.csv"), os.path.join(BASE_DIR, "DXY_Daily_Cache.csv"), 
+                    os.path.join(BASE_DIR, "G4_M2_Cache.csv"), os.path.join(BASE_DIR, "G4_M2_Daily_Cache.csv")]:
         if os.path.exists(cache_f): os.remove(cache_f)
     st.session_state.force_refresh = False
     st.rerun()
@@ -1250,14 +1280,15 @@ with tab2:
             ism_plot['pmi_nmi_sum'] = ism_plot['pmi'] + ism_plot['nmi']
             ism_plot['pmi_nmi_yoy'] = ism_plot['pmi_nmi_sum'].pct_change(12) * 100
             ism_plot = ism_plot.reset_index()
-            ism_plot = ism_plot[(ism_plot['date'] >= '2009-01-01') & (ism_plot['date'] <= lt_df['date'].max())]
+            ism_plot = ism_plot[(ism_plot['date'] >= '2009-01-01')]
         except Exception:
             ism_plot = pd.DataFrame()
 
         fig_lt2 = go.Figure()
         
         fig_lt2.add_trace(go.Scatter(x=lt_df['date'], y=lt_df['spy'], name="SPY (Log)", line=dict(color='black', width=3.5), yaxis="y1"))
-        fig_lt2.add_trace(go.Scatter(x=lt_df['date'], y=lt_df['spy_yoy'], name="SPY YoY (%)", fill='tozeroy', line=dict(color="rgba(100, 149, 237, 0.5)", width=2), yaxis="y2"))
+        
+        fig_lt2.add_trace(go.Scatter(x=lt_df['date'], y=lt_df['spy_yoy'], name="SPY YoY (%)", fill='tozeroy', mode='lines', line=dict(color="blue", width=1.5), fillcolor="rgba(0, 0, 255, 0.2)", yaxis="y2"))
         
         if not ism_plot.empty and 'pmi_nmi_yoy' in ism_plot.columns:
             fig_lt2.add_trace(go.Scatter(x=ism_plot['date'], y=ism_plot['pmi_nmi_yoy'], name="PMI+NMI YoY (%)", line=dict(color="red", width=2, dash='solid'), yaxis="y3"))
@@ -1277,7 +1308,131 @@ with tab2:
         fig_lt2.update_xaxes(range=[lt_df['date'].min(), lt_x_max_padded], domain=[0, 0.94], **axis_opts) 
         st.plotly_chart(fig_lt2, use_container_width=True)
 
-    # === 图4: SPY 3-month Chg ===
+    # === 图4: SPY YoY + SPY + ISM PMI ===
+    if 'spy_yoy' in lt_df.columns:
+        try:
+            pmi_df_local2 = pd.read_csv(os.path.join(BASE_DIR, "ISM_PMI.csv"))
+            d_col_p2 = next(c for c in pmi_df_local2.columns if 'date' in c.lower())
+            v_col_p2 = next(c for c in pmi_df_local2.columns if c != d_col_p2)
+            pmi_df_local2['date'] = pd.to_datetime(pmi_df_local2[d_col_p2]).dt.tz_localize(None)
+            pmi_df_local2 = pmi_df_local2.set_index('date').resample('ME').last().reset_index()
+            pmi_df_local2['pmi'] = pmi_df_local2[v_col_p2]
+            pmi_plot = pmi_df_local2[(pmi_df_local2['date'] >= '2009-01-01')]
+        except Exception:
+            pmi_plot = pd.DataFrame()
+            
+        fig_lt_new4 = go.Figure()
+
+        fig_lt_new4.add_trace(go.Scatter(x=lt_df['date'], y=lt_df['spy'], name="SPY (Log)", line=dict(color='black', width=3.5), yaxis="y1"))
+        fig_lt_new4.add_trace(go.Scatter(x=lt_df['date'], y=lt_df['spy_yoy'], name="SPY YoY (%)", fill='tozeroy', mode='lines', line=dict(color="blue", width=1.5), fillcolor="rgba(0, 0, 255, 0.2)", yaxis="y2"))
+        
+        if not pmi_plot.empty and 'pmi' in pmi_plot.columns:
+            fig_lt_new4.add_trace(go.Scatter(x=pmi_plot['date'], y=pmi_plot['pmi'], name="ISM PMI", line=dict(color="red", width=2), yaxis="y3"))
+
+        max_yoy = lt_df['spy_yoy'].abs().max() if pd.notna(lt_df['spy_yoy'].abs().max()) else 60
+        range_yoy = [-max_yoy * 1.1, max_yoy * 1.1]
+        
+        if not pmi_plot.empty and 'pmi' in pmi_plot.columns:
+            max_pmi_dev = (pmi_plot['pmi'] - 50).abs().max()
+            if pd.isna(max_pmi_dev): max_pmi_dev = 20
+        else:
+            max_pmi_dev = 20
+        max_pmi_dev = max(10, max_pmi_dev * 1.1)
+        range_pmi = [50 - max_pmi_dev, 50 + max_pmi_dev]
+
+        fig_lt_new4.update_layout(
+            title=dict(text="<b>4. 宏观经济共振: SPY YoY vs ISM PMI | SPY YoY 0轴与 ISM PMI 50横向对齐</b>", x=0, xref='container', xanchor='left', font=dict(size=22, color="black")),
+            **layout_template,
+            yaxis=dict(type="log", side="left", **axis_opts), 
+            yaxis2=dict(overlaying="y", side="right", range=range_yoy, **axis_opts), 
+            yaxis3=dict(overlaying="y", side="right", anchor="free", position=0.975, range=range_pmi, **axis_opts) 
+        )
+        fig_lt_new4.update_xaxes(range=[lt_df['date'].min(), lt_x_max_padded], domain=[0, 0.94], **axis_opts) 
+        st.plotly_chart(fig_lt_new4, use_container_width=True)
+
+    # === 数据加载辅助函数：扩散指数 ===
+    def load_diffusion_data(filename, val_col_name):
+        path = os.path.join(BASE_DIR, filename)
+        if os.path.exists(path):
+            try:
+                df = pd.read_csv(path)
+                d_col = next(c for c in df.columns if 'date' in c.lower())
+                v_col = next(c for c in df.columns if c != d_col)
+                df['date'] = pd.to_datetime(df[d_col]).dt.tz_localize(None)
+                df = df.set_index('date').resample('ME').last().reset_index()
+                df[val_col_name] = pd.to_numeric(df[v_col], errors='coerce')
+                return df[(df['date'] >= '2009-01-01')]
+            except Exception:
+                pass
+        return pd.DataFrame()
+
+    # === 新增 图5: SPY YoY + SPY + 全球PMI扩散指数 ===
+    if 'spy_yoy' in lt_df.columns:
+        diff_idx_plot = load_diffusion_data("全球PMI扩散指数.csv", "diff_idx")
+        
+        fig_lt_new5 = go.Figure()
+
+        fig_lt_new5.add_trace(go.Scatter(x=lt_df['date'], y=lt_df['spy'], name="SPY (Log)", line=dict(color='black', width=3.5), yaxis="y1"))
+        fig_lt_new5.add_trace(go.Scatter(x=lt_df['date'], y=lt_df['spy_yoy'], name="SPY YoY (%)", fill='tozeroy', mode='lines', line=dict(color="blue", width=1.5), fillcolor="rgba(0, 0, 255, 0.2)", yaxis="y2"))
+        
+        if not diff_idx_plot.empty and 'diff_idx' in diff_idx_plot.columns:
+            fig_lt_new5.add_trace(go.Scatter(x=diff_idx_plot['date'], y=diff_idx_plot['diff_idx'], name="全球PMI扩散指数", line=dict(color="red", width=2), yaxis="y3"))
+
+        max_yoy = lt_df['spy_yoy'].abs().max() if pd.notna(lt_df['spy_yoy'].abs().max()) else 60
+        range_yoy = [-max_yoy * 1.1, max_yoy * 1.1]
+        
+        if not diff_idx_plot.empty and 'diff_idx' in diff_idx_plot.columns:
+            max_diff_dev = (diff_idx_plot['diff_idx'] - 50).abs().max()
+            if pd.isna(max_diff_dev): max_diff_dev = 50
+        else:
+            max_diff_dev = 50
+        max_diff_dev = max(10, max_diff_dev * 1.1)
+        range_diff = [50 - max_diff_dev, 50 + max_diff_dev]
+
+        fig_lt_new5.update_layout(
+            title=dict(text="<b>5. 宏观经济共振: SPY YoY vs 全球PMI扩散指数 | 0轴与50横向对齐</b>", x=0, xref='container', xanchor='left', font=dict(size=22, color="black")),
+            **layout_template,
+            yaxis=dict(type="log", side="left", **axis_opts), 
+            yaxis2=dict(overlaying="y", side="right", range=range_yoy, **axis_opts), 
+            yaxis3=dict(overlaying="y", side="right", anchor="free", position=0.975, range=range_diff, **axis_opts) 
+        )
+        fig_lt_new5.update_xaxes(range=[lt_df['date'].min(), lt_x_max_padded], domain=[0, 0.94], **axis_opts) 
+        st.plotly_chart(fig_lt_new5, use_container_width=True)
+
+    # === 新增 图6: SPY YoY + SPY + 全球PMI年变动扩散指数 ===
+    if 'spy_yoy' in lt_df.columns:
+        diff_yoy_idx_plot = load_diffusion_data("全球PMI年变动扩散指数.csv", "diff_yoy_idx")
+        
+        fig_lt_new6 = go.Figure()
+
+        fig_lt_new6.add_trace(go.Scatter(x=lt_df['date'], y=lt_df['spy'], name="SPY (Log)", line=dict(color='black', width=3.5), yaxis="y1"))
+        fig_lt_new6.add_trace(go.Scatter(x=lt_df['date'], y=lt_df['spy_yoy'], name="SPY YoY (%)", fill='tozeroy', mode='lines', line=dict(color="blue", width=1.5), fillcolor="rgba(0, 0, 255, 0.2)", yaxis="y2"))
+        
+        if not diff_yoy_idx_plot.empty and 'diff_yoy_idx' in diff_yoy_idx_plot.columns:
+            fig_lt_new6.add_trace(go.Scatter(x=diff_yoy_idx_plot['date'], y=diff_yoy_idx_plot['diff_yoy_idx'], name="全球PMI年变动扩散指数", line=dict(color="red", width=2), yaxis="y3"))
+
+        max_yoy = lt_df['spy_yoy'].abs().max() if pd.notna(lt_df['spy_yoy'].abs().max()) else 60
+        range_yoy = [-max_yoy * 1.1, max_yoy * 1.1]
+        
+        if not diff_yoy_idx_plot.empty and 'diff_yoy_idx' in diff_yoy_idx_plot.columns:
+            max_diff_yoy_dev = (diff_yoy_idx_plot['diff_yoy_idx'] - 50).abs().max()
+            if pd.isna(max_diff_yoy_dev): max_diff_yoy_dev = 50
+        else:
+            max_diff_yoy_dev = 50
+        max_diff_yoy_dev = max(10, max_diff_yoy_dev * 1.1)
+        range_diff_yoy = [50 - max_diff_yoy_dev, 50 + max_diff_yoy_dev]
+
+        fig_lt_new6.update_layout(
+            title=dict(text="<b>6. 宏观经济共振: SPY YoY vs 全球PMI年变动扩散指数 | 0轴与50横向对齐</b>", x=0, xref='container', xanchor='left', font=dict(size=22, color="black")),
+            **layout_template,
+            yaxis=dict(type="log", side="left", **axis_opts), 
+            yaxis2=dict(overlaying="y", side="right", range=range_yoy, **axis_opts), 
+            yaxis3=dict(overlaying="y", side="right", anchor="free", position=0.975, range=range_diff_yoy, **axis_opts) 
+        )
+        fig_lt_new6.update_xaxes(range=[lt_df['date'].min(), lt_x_max_padded], domain=[0, 0.94], **axis_opts) 
+        st.plotly_chart(fig_lt_new6, use_container_width=True)
+
+    # === 图7: SPY 3-month Chg ===
     if 'spy_roc_63' in lt_df.columns:
         fig_lt3 = make_subplots(specs=[[{"secondary_y": True}]])
         fig_lt3.add_trace(go.Scatter(x=lt_df['date'], y=lt_df['spy_roc_63'], name="SPY 3-Month Chg (%)", fill='tozeroy', line=dict(color="MediumOrchid")), secondary_y=False)
@@ -1293,13 +1448,13 @@ with tab2:
             if not pts_roc.empty: 
                 fig_lt3.add_trace(go.Scatter(x=pts_roc['date'], y=pts_roc['spy']*0.95, mode='markers', marker=dict(symbol='triangle-up', size=16, color='red'), name="ROC底部买入"), secondary_y=True)
         
-        fig_lt3.update_layout(title=dict(text="<b>4. 极限动量偏离: SPY 3-Month Change (ROC 63) vs SPY | 买入规则: ROC < -9% 且上穿自身 MA3 | 5天内不再触发</b>", x=0, xref='container', xanchor='left', font=dict(size=22, color="black")), **layout_template)
+        fig_lt3.update_layout(title=dict(text="<b>7. 极限动量偏离: SPY 3-Month Change (ROC 63) vs SPY | 买入规则: ROC < -9% 且上穿自身 MA3 | 5天内不再触发</b>", x=0, xref='container', xanchor='left', font=dict(size=22, color="black")), **layout_template)
         fig_lt3.update_xaxes(range=[lt_df['date'].min(), lt_x_max_padded], domain=[0, 0.94], **axis_opts) 
         fig_lt3.update_yaxes(type="log", secondary_y=True, **axis_opts)
         fig_lt3.update_yaxes(secondary_y=False, range=[-30, 60], **axis_opts)
         st.plotly_chart(fig_lt3, use_container_width=True)
 
-    # === 图5: 估值周期 SPY vs CAPE (主副图联动) ===
+    # === 图8: 估值周期 SPY vs CAPE (主副图联动) ===
     if 'cape' in lt_df.columns:
         if cape_trend is not None and cape_up is not None and cape_lo is not None:
             max_abs_res = (lt_df['cape'] - cape_trend).abs().max()
@@ -1339,7 +1494,7 @@ with tab2:
         custom_layout = layout_template.copy()
         custom_layout["height"] = 900 
         
-        fig_lt4.update_layout(title=dict(text="<b>5. 估值周期: SPY vs Shiller CAPE Ratio (上图: 绝对估值通道 | 下图: 自适应百分位满量程)</b>", x=0, xref='container', xanchor='left', font=dict(size=22, color="black")), **custom_layout)
+        fig_lt4.update_layout(title=dict(text="<b>8. 估值周期: SPY vs Shiller CAPE Ratio (上图: 绝对估值通道 | 下图: 自适应百分位满量程)</b>", x=0, xref='container', xanchor='left', font=dict(size=22, color="black")), **custom_layout)
         
         fig_lt4.update_xaxes(range=[lt_df['date'].min(), lt_x_max_padded], domain=[0, 0.94], row=1, col=1, **axis_opts)
         fig_lt4.update_xaxes(range=[lt_df['date'].min(), lt_x_max_padded], domain=[0, 0.94], row=2, col=1, **axis_opts)
@@ -1350,7 +1505,7 @@ with tab2:
         
         st.plotly_chart(fig_lt4, use_container_width=True)
 
-    # === 图6: 估值动态 SPY vs 标普500远期市盈率 ===
+    # === 图9: 估值动态 SPY vs 标普500远期市盈率 ===
     if 'forward_pe' in lt_df.columns:
         fig_lt5_new = make_subplots(specs=[[{"secondary_y": True}]])
         fig_lt5_new.add_trace(go.Scatter(x=lt_df['date'], y=lt_df['forward_pe'], name="Forward P/E", line=dict(color="darkgoldenrod", width=2)), secondary_y=False)
@@ -1366,13 +1521,13 @@ with tab2:
             
         fig_lt5_new.add_trace(go.Scatter(x=lt_df['date'], y=lt_df['spy'], name="SPY (Log)", line=dict(color='black', width=3.5)), secondary_y=True)
 
-        fig_lt5_new.update_layout(title=dict(text="<b>6. 估值动态: SPY vs 标普500远期市盈率</b>", x=0, xref='container', xanchor='left', font=dict(size=22, color="black")), **layout_template)
+        fig_lt5_new.update_layout(title=dict(text="<b>9. 估值动态: SPY vs 标普500远期市盈率</b>", x=0, xref='container', xanchor='left', font=dict(size=22, color="black")), **layout_template)
         fig_lt5_new.update_xaxes(range=[lt_df['date'].min(), lt_x_max_padded], domain=[0, 0.94], **axis_opts)
         fig_lt5_new.update_yaxes(type="log", secondary_y=True, **axis_opts)
         fig_lt5_new.update_yaxes(secondary_y=False, range=[10, 45], **axis_opts) 
         st.plotly_chart(fig_lt5_new, use_container_width=True)
 
-    # === 图7: 风险偏好 SPY vs SMH/XLP YoY ===
+    # === 图10: 风险偏好 SPY vs SMH/XLP YoY ===
     if 'smh_xlp_yoy' in lt_df.columns:
         fig_lt5 = make_subplots(specs=[[{"secondary_y": True}]])
         fig_lt5.add_trace(go.Scatter(x=lt_df['date'], y=lt_df['smh_xlp_yoy'], name="SMH/XLP YoY (%)", fill='tozeroy', line=dict(color="teal", width=2)), secondary_y=False)
@@ -1381,7 +1536,7 @@ with tab2:
         fig_lt5.add_hline(y=60, line_dash="dash", line_color="red", name="y=60 高位过热", secondary_y=False)
         fig_lt5.add_hline(y=-20, line_dash="dash", line_color="green", name="y=-20 极度悲观", secondary_y=False)
 
-        fig_lt5.update_layout(title=dict(text="<b>7. 风险偏好定价: SPY vs SMH/XLP YoY (市场定价周期情况)</b>", x=0, xref='container', xanchor='left', font=dict(size=22, color="black")), **layout_template)
+        fig_lt5.update_layout(title=dict(text="<b>10. 风险偏好定价: SPY vs SMH/XLP YoY (市场定价周期情况)</b>", x=0, xref='container', xanchor='left', font=dict(size=22, color="black")), **layout_template)
         
         lt_x_max_padded_100 = lt_df['date'].max() + pd.Timedelta(days=100)
         fig_lt5.update_xaxes(range=[lt_df['date'].min(), lt_x_max_padded_100], domain=[0, 0.94], **axis_opts)
@@ -1390,7 +1545,7 @@ with tab2:
         fig_lt5.update_yaxes(secondary_y=False, range=[-50, 150], **axis_opts)
         st.plotly_chart(fig_lt5, use_container_width=True)
 
-    # === 图8: 综合金融条件指数 (FCI) ===
+    # === 图11: 综合金融条件指数 (FCI) ===
     if 'fci_score' in lt_df.columns:
         fig_lt_fci = make_subplots(specs=[[{"secondary_y": True}]])
         
@@ -1440,7 +1595,7 @@ with tab2:
         fig_lt_fci.add_hline(y=350, line_dash="dash", line_color="red", name="极度恐慌/收紧 (350)", secondary_y=False)
         fig_lt_fci.add_hline(y=50, line_dash="dash", line_color="green", name="极度贪婪/宽松 (50)", secondary_y=False)
 
-        new_title = "<b>8. 综合金融条件指数 (FCI) | 规则: 跌破350触发买入(冷却10天); <200淡红背景, >=200淡绿背景</b>"
+        new_title = "<b>11. 综合金融条件指数 (FCI) | 规则: 跌破350触发买入(冷却10天); <200淡红背景, >=200淡绿背景</b>"
         fig_lt_fci.update_layout(title=dict(text=new_title, x=0, xref='container', xanchor='left', font=dict(size=22, color="black")), **layout_template)
         
         fig_lt_fci.update_xaxes(range=[lt_df['date'].min(), lt_x_max_padded_fci], domain=[0, 0.94], **axis_opts)
@@ -1450,7 +1605,7 @@ with tab2:
         
         st.plotly_chart(fig_lt_fci, use_container_width=True)
 
-    # === 图9: 流动性周期 ISM PMI vs 降息比例 ===
+    # === 图12: 流动性周期 ISM PMI vs 降息比例 ===
     if 'pmi' in lt_df.columns and 'rate_cut_ratio' in lt_df.columns:
         fig_lt9 = make_subplots(specs=[[{"secondary_y": True}]])
         
@@ -1462,7 +1617,7 @@ with tab2:
         
         fig_lt9.add_hline(y=50, line_dash="dash", line_color="green", name="PMI 荣枯线", secondary_y=False)
         
-        fig_lt9.update_layout(title=dict(text="<b>9. 商业与流动性周期: ISM PMI vs 全球央行降息比例 (降息比例领先PMI约10个月)</b>", x=0, xref='container', xanchor='left', font=dict(size=22, color="black")), **layout_template)
+        fig_lt9.update_layout(title=dict(text="<b>12. 商业与流动性周期: ISM PMI vs 全球央行降息比例 (降息比例领先PMI约10个月)</b>", x=0, xref='container', xanchor='left', font=dict(size=22, color="black")), **layout_template)
         
         max_date_plus_10m = lt_df['date'].max() + pd.DateOffset(months=10)
         fig_lt9.update_xaxes(range=['2009-01-01', max_date_plus_10m], domain=[0, 0.94], **axis_opts)
@@ -1470,18 +1625,18 @@ with tab2:
         fig_lt9.update_yaxes(secondary_y=True, range=[0, 100], **axis_opts)
         st.plotly_chart(fig_lt9, use_container_width=True)
 
-    # === 图10: 就业周期 SPY vs UNRATE (1994年至今) ===
+    # === 图13: 就业周期 SPY vs UNRATE (1994年至今) ===
     if 'unrate' in lt_df_1994.columns:
         fig_lt10 = make_subplots(specs=[[{"secondary_y": True}]])
         fig_lt10.add_trace(go.Scatter(x=lt_df_1994['date'], y=lt_df_1994['unrate'], name="US Unemployment Rate (%)", fill='tozeroy', line=dict(color="purple", width=2)), secondary_y=False)
         fig_lt10.add_trace(go.Scatter(x=lt_df_1994['date'], y=lt_df_1994['spy'], name="SPY (Log)", line=dict(color='black', width=3.5)), secondary_y=True)
-        fig_lt10.update_layout(title=dict(text="<b>10. 经济与就业周期: SPY vs 失业率 (UNRATE)</b>", x=0, xref='container', xanchor='left', font=dict(size=22, color="black")), **layout_template)
+        fig_lt10.update_layout(title=dict(text="<b>13. 经济与就业周期: SPY vs 失业率 (UNRATE)</b>", x=0, xref='container', xanchor='left', font=dict(size=22, color="black")), **layout_template)
         fig_lt10.update_xaxes(range=[lt_df_1994['date'].min(), lt_x_max_padded_1994], domain=[0, 0.94], **axis_opts)
         fig_lt10.update_yaxes(type="log", secondary_y=True, **axis_opts)
         fig_lt10.update_yaxes(secondary_y=False, range=[3, 14], **axis_opts) 
         st.plotly_chart(fig_lt10, use_container_width=True)
 
-    # === 图11: 货币周期 SPY vs DFF & DGS2 (2000年至今) ===
+    # === 图14: 货币周期 SPY vs DFF & DGS2 (2000年至今) ===
     if 'dff' in lt_df_1994.columns and 'dgs2' in lt_df_1994.columns:
         lt_df_2000 = lt_df_1994[lt_df_1994['date'] >= '2000-01-01'].copy()
         lt_x_max_padded_2000 = lt_df_2000['date'].max() + pd.Timedelta(days=50) if not lt_df_2000.empty else lt_x_max_padded_1994
@@ -1490,13 +1645,13 @@ with tab2:
         fig_lt11.add_trace(go.Scatter(x=lt_df_2000['date'], y=lt_df_2000['dff'], name="Fed Funds Rate (DFF)", line=dict(color="blue", width=2, dash='dot')), secondary_y=False)
         fig_lt11.add_trace(go.Scatter(x=lt_df_2000['date'], y=lt_df_2000['dgs2'], name="US 2Y Treasury (DGS2)", line=dict(color="red", width=2)), secondary_y=False)
         fig_lt11.add_trace(go.Scatter(x=lt_df_2000['date'], y=lt_df_2000['spy'], name="SPY (Log)", line=dict(color='black', width=3.5)), secondary_y=True)
-        fig_lt11.update_layout(title=dict(text="<b>11. 货币政策周期: SPY vs 联邦基金利率 (DFF) & 2年期美债 (DGS2)</b>", x=0, xref='container', xanchor='left', font=dict(size=22, color="black")), **layout_template)
+        fig_lt11.update_layout(title=dict(text="<b>14. 货币政策周期: SPY vs 联邦基金利率 (DFF) & 2年期美债 (DGS2)</b>", x=0, xref='container', xanchor='left', font=dict(size=22, color="black")), **layout_template)
         fig_lt11.update_xaxes(range=[lt_df_2000['date'].min(), lt_x_max_padded_2000], domain=[0, 0.94], **axis_opts)
         fig_lt11.update_yaxes(type="log", secondary_y=True, **axis_opts)
         fig_lt11.update_yaxes(secondary_y=False, **axis_opts)
         st.plotly_chart(fig_lt11, use_container_width=True)
 
-    # === 图12: 极度恐慌买入 VIX > 40 vs SPY ===
+    # === 图15: 极度恐慌买入 VIX > 40 vs SPY ===
     if 'vix' in lt_df.columns:
         fig_lt12 = make_subplots(specs=[[{"secondary_y": True}]])
         fig_lt12.add_trace(go.Scatter(x=lt_df['date'], y=lt_df['vix'], name="VIX Close", line=dict(color="crimson", width=2)), secondary_y=False)
@@ -1513,13 +1668,13 @@ with tab2:
             if not pts_vix40.empty:
                 fig_lt12.add_trace(go.Scatter(x=pts_vix40['date'], y=pts_vix40['spy']*0.95, mode='markers', marker=dict(symbol='triangle-up', size=16, color='red'), name="VIX极值回落买入"), secondary_y=True)
                 
-        fig_lt12.update_layout(title=dict(text="<b>12. 极度恐慌抛售买入: SPY vs VIX | 买入规则: VIX 盘中突破 40 后跌破自身 MA3 | 10天内不再触发</b>", x=0, xref='container', xanchor='left', font=dict(size=22, color="black")), **layout_template)
+        fig_lt12.update_layout(title=dict(text="<b>15. 极度恐慌抛售买入: SPY vs VIX | 买入规则: VIX 盘中突破 40 后跌破自身 MA3 | 10天内不再触发</b>", x=0, xref='container', xanchor='left', font=dict(size=22, color="black")), **layout_template)
         fig_lt12.update_xaxes(range=[lt_df['date'].min(), lt_x_max_padded], domain=[0, 0.94], **axis_opts)
         fig_lt12.update_yaxes(type="log", secondary_y=True, **axis_opts)
         fig_lt12.update_yaxes(secondary_y=False, **axis_opts) 
         st.plotly_chart(fig_lt12, use_container_width=True)
 
-    # === 图13: 信用市场交叉验证图 (HYG vs SPY) 2012至今 ===
+    # === 图16: 信用市场交叉验证图 (HYG vs SPY) 2012至今 ===
     df_hyg_2012 = df_final[df_final['date'] >= '2012-02-01'].copy()
     if 'hyg' in df_hyg_2012.columns and 'hyg_ma120' in df_hyg_2012.columns:
         valid_hyg_lt = df_hyg_2012[['hyg', 'hyg_ma120']].dropna()
@@ -1562,7 +1717,7 @@ with tab2:
             fig_hyg_lt.add_trace(go.Scatter(x=df_hyg_2012['date'], y=df_hyg_2012['hyg_ma120'], name="HYG MA120", line=dict(color="orange", width=2, dash='dash')), secondary_y=False)
             fig_hyg_lt.add_trace(go.Scatter(x=df_hyg_2012['date'], y=df_hyg_2012['spy'], name="SPY (Log)", line=dict(color='black', width=3.5)), secondary_y=True)
             
-            fig_hyg_lt.update_layout(title=dict(text=f"<b>13. 信用市场交叉验证: HYG vs SPY (当前状态: {state_str_lt})</b>", x=0, xref='container', xanchor='left', font=dict(size=22, color="black")), **layout_template)
+            fig_hyg_lt.update_layout(title=dict(text=f"<b>16. 信用市场交叉验证: HYG vs SPY (当前状态: {state_str_lt})</b>", x=0, xref='container', xanchor='left', font=dict(size=22, color="black")), **layout_template)
             fig_hyg_lt.update_xaxes(range=[df_hyg_2012['date'].min(), lt_x_max_padded_hyg], domain=[0, 0.94], **axis_opts)
             fig_hyg_lt.update_yaxes(type="log", secondary_y=True, **axis_opts)
             fig_hyg_lt.update_yaxes(secondary_y=False, **axis_opts)
@@ -1571,7 +1726,67 @@ with tab2:
 
             st.plotly_chart(fig_hyg_lt, use_container_width=True)
 
-    # ================= 图 14, 15, 16, 17 (SPX & NDX 周线趋势对数通道扩展版) =================
+    # === 新增 图17: 美元指数 (DXY) 日线对数通道 ===
+    def plot_dxy_daily_trend_chart(df_plot, df_spy, title, anchor1, anchor2, parallel_anchor, extend_days=100):
+        last_date = df_plot['Date'].max()
+        future_dates = pd.bdate_range(start=last_date + pd.Timedelta(days=1), periods=extend_days)
+        extended_dates = pd.concat([df_plot['Date'], pd.Series(future_dates)]).reset_index(drop=True)
+        
+        x_ext = pd.to_datetime(extended_dates).apply(lambda d: d.toordinal()).values
+        x_orig = pd.to_datetime(df_plot['Date']).apply(lambda d: d.toordinal()).values
+        
+        idx1 = np.abs(df_plot['Date'] - pd.to_datetime(anchor1)).argmin()
+        idx2 = np.abs(df_plot['Date'] - pd.to_datetime(anchor2)).argmin()
+        idx_p = np.abs(df_plot['Date'] - pd.to_datetime(parallel_anchor)).argmin()
+        
+        x1, x2, xp = x_orig[idx1], x_orig[idx2], x_orig[idx_p]
+        
+        y1, y2 = np.log(df_plot['Low'].iloc[idx1]), np.log(df_plot['Low'].iloc[idx2])
+        yp = np.log(df_plot['High'].iloc[idx_p])
+            
+        m = (y2 - y1) / (x2 - x1) if x2 != x1 else 0
+        c_lower = y1 - m * x1
+        c_upper = yp - m * xp
+        
+        lower_bound = np.exp(m * x_ext + c_lower)
+        upper_bound = np.exp(m * x_ext + c_upper)
+        
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+        
+        fig.add_trace(go.Scatter(x=extended_dates, y=upper_bound, name="上轨 (High)", line=dict(color="red", dash="dash", width=2)), secondary_y=False)
+        fig.add_trace(go.Scatter(x=extended_dates, y=lower_bound, name="下轨 (Low)", line=dict(color="green", dash="dash", width=2)), secondary_y=False)
+        fig.add_trace(go.Scatter(x=df_plot['Date'], y=df_plot['Close'], name="DXY Close", line=dict(color="blue", width=2)), secondary_y=False)
+        
+        fig.add_trace(go.Scatter(x=df_spy['date'], y=df_spy['spy'], name="SPY (Log)", line=dict(color='black', width=3.5)), secondary_y=True)
+        
+        custom_layout = layout_template.copy()
+        custom_layout["height"] = 750
+        fig.update_layout(title=dict(text=f"<b>{title}</b>", x=0, xref='container', xanchor='left', font=dict(size=22, color="black")), **custom_layout)
+        
+        x_max_padded_chart = extended_dates.max() + pd.Timedelta(days=10)
+        fig.update_xaxes(range=[df_plot['Date'].min(), x_max_padded_chart], domain=[0, 0.94], **axis_opts)
+        
+        # Plotly中 log坐标轴的范围设定需要使用 np.log10
+        fig.update_yaxes(type="log", secondary_y=False, range=[np.log10(70), np.log10(240)], **axis_opts)
+        fig.update_yaxes(type="log", secondary_y=True, **axis_opts)
+        
+        return fig
+
+    df_dxy_daily = get_dxy_daily_data()
+    if not df_dxy_daily.empty:
+        df_dxy_daily = df_dxy_daily.reset_index()
+        fig_lt17_dxy = plot_dxy_daily_trend_chart(
+            df_dxy_daily,
+            df_final,  # 传入包含 SPY 数据的 DataFrame
+            title="17. 美元指数 (DXY) 日线对数通道 (2006年起)",
+            anchor1="2008-07-14", 
+            anchor2="2021-05-24", 
+            parallel_anchor="2008-11-20", 
+            extend_days=100
+        )
+        st.plotly_chart(fig_lt17_dxy, use_container_width=True)
+
+    # ================= 图 18, 19, 20, 21 (SPX & NDX 周线趋势对数通道扩展版) =================
     
     def plot_extended_trend_chart(df_plot, title, anchor1, anchor2, parallel_anchor, base_line='lower', index_name="SPX", extend_weeks=30):
         last_date = df_plot['Date'].max()
@@ -1654,7 +1869,7 @@ with tab2:
         if not df_long.empty:
             fig_lt14 = plot_extended_trend_chart(
                 df_long, 
-                title="14. SPX 长期趋势周线对数通道 (1930年起 | 包含未来100周)", 
+                title="18. SPX 长期趋势周线对数通道 (1930年起 | 包含未来100周)", 
                 anchor1="1942-04-27", 
                 anchor2="2009-03-02", 
                 parallel_anchor="1937-03-01",
@@ -1668,7 +1883,7 @@ with tab2:
         if not df_recent.empty:
             fig_lt15 = plot_extended_trend_chart(
                 df_recent, 
-                title="15. SPX 中短期趋势周线对数通道 (2008年起 | 包含未来30周)", 
+                title="19. SPX 中短期趋势周线对数通道 (2008年起 | 包含未来30周)", 
                 anchor1="2009-07-13", 
                 anchor2="2023-10-27", 
                 parallel_anchor="2014-11-28",
@@ -1686,7 +1901,7 @@ with tab2:
         if not df_ndx_long.empty:
             fig_lt16 = plot_extended_trend_chart(
                 df_ndx_long,
-                title="16. NDX 长期趋势周线对数通道 (1985年起 | 包含未来100周)",
+                title="20. NDX 长期趋势周线对数通道 (1985年起 | 包含未来100周)",
                 anchor1="1987-09-28",
                 anchor2="2021-11-21",
                 parallel_anchor="2009-03-02",
@@ -1700,7 +1915,7 @@ with tab2:
         if not df_ndx_mid.empty:
             fig_lt17 = plot_extended_trend_chart(
                 df_ndx_mid,
-                title="17. NDX 中短期趋势周线对数通道 (2010年起 | 包含未来30周)",
+                title="21. NDX 中短期趋势周线对数通道 (2010年起 | 包含未来30周)",
                 anchor1="2010-07-01",
                 anchor2="2023-01-06",
                 parallel_anchor="2024-12-16",
@@ -1710,7 +1925,7 @@ with tab2:
             )
             st.plotly_chart(fig_lt17, use_container_width=True)
 
-    # ================= 图 18 (IWM 日线趋势通道) =================
+    # ================= 图 22 (IWM 日线趋势通道) =================
     
     def plot_iwm_daily_trend_chart(df_plot, title, anchor1, anchor2, parallel_anchor, extend_days=100):
         last_date = df_plot['Date'].max()
@@ -1785,7 +2000,7 @@ with tab2:
         df_iwm_daily = df_iwm_daily.reset_index()
         fig_lt18 = plot_iwm_daily_trend_chart(
             df_iwm_daily,
-            title="18. IWM 长期趋势日线对数通道 (2000年起 | 包含未来100天)",
+            title="22. IWM 长期趋势日线对数通道 (2000年起 | 包含未来100天)",
             anchor1="2006-05-05", 
             anchor2="2021-11-08", 
             parallel_anchor="2020-03-19", 
@@ -1793,7 +2008,7 @@ with tab2:
         )
         st.plotly_chart(fig_lt18, use_container_width=True)
 
-    # ================= 图 19 (全球宏观流动性 G4 M2 YoY vs ISM PMI) =================
+    # ================= 图 23 (全球宏观流动性 G4 M2 YoY vs ISM PMI) =================
     df_g4 = get_g4_m2_data()
     
     pmi_raw_clean = pd.DataFrame()
@@ -1842,7 +2057,7 @@ with tab2:
                 fig_lt19.add_trace(go.Scatter(x=df_g4_plot['date'], y=df_g4_plot['g4_m2_yoy'], name="G4 M2 YoY (%)", fill='tozeroy', line=dict(color="rgba(255, 69, 0, 0.8)", width=2)), secondary_y=True)
                 fig_lt19.add_hline(y=0, line_dash="solid", line_color="gray", name="M2 零轴", secondary_y=True)
             
-        fig_lt19.update_layout(title=dict(text="<b>19. 全球宏观流动性与经济周期: G4 M2 YoY (基于本地CSV) vs ISM PMI (最新可用)</b>", x=0, xref='container', xanchor='left', font=dict(size=22, color="black")), **layout_template)
+        fig_lt19.update_layout(title=dict(text="<b>23. 全球宏观流动性与经济周期: G4 M2 YoY (基于本地CSV) vs ISM PMI (最新可用)</b>", x=0, xref='container', xanchor='left', font=dict(size=22, color="black")), **layout_template)
         
         max_dt = pd.Timestamp('2009-01-01')
         if has_pmi: max_dt = max(max_dt, pmi_raw_clean['date'].max())
